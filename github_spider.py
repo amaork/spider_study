@@ -9,7 +9,11 @@ class GithubUserSpider(object):
     URL_DB = {
 
         "home": "https://github.com/username",
-        "stars": "https://github.com/stars/username",
+
+        "starred": "https://github.com/stars/username",
+        "starred_next": "https://github.com/stars/username?direction=desc&"
+                        "page=page_number&sort=created&_pjax=%23js-pjax-container",
+
         "followers": "https://github.com/username/followers",
         "following": "https://github.com/username/following",
         "repositories": "https://github.com/username?tab=repositories",
@@ -19,6 +23,7 @@ class GithubUserSpider(object):
 
         "fork_repo": 'class="repo-list-item public fork"(.*?)</poll-include-fragment>',
         "source_repo": 'class="repo-list-item public source"(.*?)</poll-include-fragment>',
+        "starred_repo": 'class="repo-list-name">(.*?)</a>',
 
         "repo_name": 'itemprop="name codeRepository">(.*?)</a>',
         "repo_desc": 'itemprop="description">(.*?)</p>',
@@ -33,6 +38,11 @@ class GithubUserSpider(object):
         "user_email": 'aria-label="Email"(.*?)</li>',
         "user_blog": 'aria-label="Blog or website"(.*?)</li>',
         "user_join_date": 'aria-label="Member since"(.*?)</li>',
+
+        "starred": 'href="/stars/.*?(.*?)Starred',
+        "followers": 'href="/.*?/followers"(.*?)Followers',
+        "following": 'href="/.*?/following"(.*?)Following',
+        "counter": 'class="vcard-stat-count d-block">(.*?)</strong>',
     }
 
     def __init__(self, username):
@@ -52,31 +62,37 @@ class GithubUserSpider(object):
 
         return self.RE_PATTEN_DB.get(info)
 
-    def get_page(self, info):
-        """Get user specified information
-
-        :param info: such as repositories, stars, followers etc
-        :return: success return information page text error return ""
-        """
-
-        if info not in self.URL_DB:
-            return None
-
-        base = self.URL_DB.get(info)
-        if not isinstance(base, str):
-            return None
-
-        url = base.replace("username", self.__username)
-
+    def __get_page(self, url, params=None):
         try:
 
-            page = requests.get(url)
+            if not params:
+                page = requests.get(url, params)
+            else:
+                page = requests.get(url)
+
             return page.text
 
         except requests.RequestException, e:
 
-            print "Get user:{0:s}, {1:s} info error:{2:s}".format(self.__username, info, e)
+            print "Get user:{0:s}, {1:s} info error:{2:s}".format(self.__username, url, e)
             return None
+
+    def get_page(self, key, params=None):
+        """Get user specified information
+
+        :param key: such as repositories, stars, followers etc
+        :param params: get passing parameters
+        :return: success return information page text error return ""
+        """
+
+        if key not in self.URL_DB:
+            return None
+
+        base = self.URL_DB.get(key)
+        if not isinstance(base, str):
+            return None
+
+        return self.__get_page(base.replace("username", self.__username), params)
 
     def get_info(self, text, key):
         try:
@@ -96,7 +112,7 @@ class GithubUserSpider(object):
             print "Get info:{0:s} error:{1:s}".format(key, e)
             return ""
 
-    def get_repo_detail(self, repo):
+    def __get_repo_detail(self, repo):
         if not isinstance(repo, unicode):
             return None
 
@@ -121,7 +137,7 @@ class GithubUserSpider(object):
 
         repositories = list()
         for repo in repo_list:
-            repositories.append(self.get_repo_detail(repo))
+            repositories.append(self.__get_repo_detail(repo))
 
         return repositories
 
@@ -141,12 +157,56 @@ class GithubUserSpider(object):
         info["blog"] = self.get_info(self.get_info(home, "user_blog"), 'class="url" rel="nofollow me">(.*?)</a>')
         info["email"] = self.get_info(self.get_info(home, "user_email"), '>([^@]+@[^@]+.[^@])</a>')
         info["organization"] = self.get_info(self.get_info(home, "user_organization"), '<div>(.*?)</div>')
-        info["localtion"] = self.get_info(self.get_info(home, "user_location"), '</svg>(.*)')
+        info["location"] = self.get_info(self.get_info(home, "user_location"), '</svg>(.*)')
         info["join_date"] = self.get_info(self.get_info(home, "user_join_date"), '<local-time.*?>(.*?)</local-time>')
+        info["starred"] = self.get_info(self.get_info(home, "starred"), "counter")
+        info["followers"] = self.get_info(self.get_info(home, "followers"), "counter")
+        info["following"] = self.get_info(self.get_info(home, "following"), "counter")
         return info
+
+    def __get_starred_next_page(self, page_number):
+        data = {
+
+            "direction": "desc",
+            "page": str(page_number),
+            "sort": "created",
+            "_pjax": "#js-pjax-container",
+        }
+
+        url = self.URL_DB.get("starred_next")
+        if not isinstance(url, str):
+            return None
+
+        url = url.replace("username", self.__username)
+        url = url.replace("page_number", str(page_number))
+        return self.get_page("starred") if page_number == 1 else self.__get_page(url, data)
+
+    def get_starred_repo(self):
+        counter = 0
+        page_number = 1
+        starred_repo = list()
+        total = self.get_user_info().get("starred")
+        pattern = self.get_re_patten("starred_repo")
+
+        if not total:
+            return []
+
+        while counter < int(total):
+            page = self.__get_starred_next_page(page_number)
+            if not page:
+                return starred_repo
+
+            for repo in re.findall(pattern, page, re.S):
+                name = self.get_info(repo, 'href="(.*?)">')
+                starred_repo.append(name)
+
+            page_number += 1
+            counter = len(starred_repo)
+
+        return starred_repo
 
 
 spider = GithubUserSpider("amaork")
 # for repo in spider.get_source_repo() + spider.get_fork_repo():
-#     print repo
-print spider.get_user_info()
+#      print repo
+print len(spider.get_starred_repo())
