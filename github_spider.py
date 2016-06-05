@@ -10,12 +10,12 @@ class GithubUserSpider(object):
 
         "home": "https://github.com/username",
 
-        "starred": "https://github.com/stars/username",
-        "starred_next": "https://github.com/stars/username?direction=desc&"
-                        "page=page_number&sort=created&_pjax=%23js-pjax-container",
+        "starred": "https://github.com/stars/username?direction=desc&"
+                   "page=page_number&sort=created&_pjax=%23js-pjax-container",
 
-        "followers": "https://github.com/username/followers",
-        "following": "https://github.com/username/following",
+        "followers": "https://github.com/username/followers?page=page_number",
+        "following": "https://github.com/username/following?page=page_number",
+
         "repositories": "https://github.com/username?tab=repositories",
     }
 
@@ -39,9 +39,14 @@ class GithubUserSpider(object):
         "user_blog": 'aria-label="Blog or website"(.*?)</li>',
         "user_join_date": 'aria-label="Member since"(.*?)</li>',
 
-        "starred": 'href="/stars/.*?(.*?)Starred',
-        "followers": 'href="/.*?/followers"(.*?)Followers',
-        "following": 'href="/.*?/following"(.*?)Following',
+        "starred_counter": 'href="/stars/.*?(.*?)Starred',
+
+        "followers_id": '<img alt="@(.*?)"',
+        "followers_counter": 'href="/.*?/followers"(.*?)Followers',
+
+
+        "following_id": '<img alt="@(.*?)"',
+        "following_counter": 'href="/.*?/following"(.*?)Following',
         "counter": 'class="vcard-stat-count d-block">(.*?)</strong>',
     }
 
@@ -159,54 +164,80 @@ class GithubUserSpider(object):
         info["organization"] = self.get_info(self.get_info(home, "user_organization"), '<div>(.*?)</div>')
         info["location"] = self.get_info(self.get_info(home, "user_location"), '</svg>(.*)')
         info["join_date"] = self.get_info(self.get_info(home, "user_join_date"), '<local-time.*?>(.*?)</local-time>')
-        info["starred"] = self.get_info(self.get_info(home, "starred"), "counter")
-        info["followers"] = self.get_info(self.get_info(home, "followers"), "counter")
-        info["following"] = self.get_info(self.get_info(home, "following"), "counter")
+        info["starred"] = self.get_info(self.get_info(home, "starred_counter"), "counter")
+        info["followers"] = self.get_info(self.get_info(home, "followers_counter"), "counter")
+        info["following"] = self.get_info(self.get_info(home, "following_counter"), "counter")
         return info
 
-    def __get_starred_next_page(self, page_number):
-        data = {
+    def __get_dynamic_page(self, base, params, page):
+        if not isinstance(base, str) or not isinstance(params, dict) or not isinstance(page, int):
+            return None
+
+        url = base.replace("username", self.__username)
+        url = url.replace("page_number", str(page))
+        params["page"] = str(page)
+        return self.__get_page(url, params)
+
+    def __get_dynamic_data(self, url, params, pattern, subpattern=None, debug=False):
+        if not isinstance(url, str) or not isinstance(params, dict) or not isinstance(pattern, str):
+            return []
+
+        items = set()
+        last_item = ""
+        page_number = 1
+
+        while True:
+            page = self.__get_dynamic_page(url, params, page_number)
+            if not page:
+                break
+
+            item = ""
+            for data in re.findall(pattern, page, re.S):
+                if subpattern is None:
+                    item = data
+                else:
+                    item = self.get_info(data, subpattern)
+
+                items.add(item)
+
+                if debug:
+                    print len(items), item
+            else:
+                if last_item == item:
+                    #print page
+                    break
+
+            page_number += 1
+            last_item = item
+
+        return list(items)
+
+    def get_starred_repo(self):
+        url = self.URL_DB.get("starred")
+        pattern = self.get_re_patten("starred_repo")
+        params = {
 
             "direction": "desc",
-            "page": str(page_number),
+            "page": "1",
             "sort": "created",
             "_pjax": "#js-pjax-container",
         }
+        return self.__get_dynamic_data(url, params, pattern, 'href="(.*?)">')
 
-        url = self.URL_DB.get("starred_next")
-        if not isinstance(url, str):
-            return None
+    def get_followers(self):
+        url = self.URL_DB.get("followers")
+        pattern = self.get_re_patten("followers_id")
+        return self.__get_dynamic_data(url, {}, pattern, debug=True)
 
-        url = url.replace("username", self.__username)
-        url = url.replace("page_number", str(page_number))
-        return self.get_page("starred") if page_number == 1 else self.__get_page(url, data)
-
-    def get_starred_repo(self):
-        counter = 0
-        page_number = 1
-        starred_repo = list()
-        total = self.get_user_info().get("starred")
-        pattern = self.get_re_patten("starred_repo")
-
-        if not total:
-            return []
-
-        while counter < int(total):
-            page = self.__get_starred_next_page(page_number)
-            if not page:
-                return starred_repo
-
-            for repo in re.findall(pattern, page, re.S):
-                name = self.get_info(repo, 'href="(.*?)">')
-                starred_repo.append(name)
-
-            page_number += 1
-            counter = len(starred_repo)
-
-        return starred_repo
+    def get_following(self):
+        url = self.URL_DB.get("following")
+        pattern = self.get_re_patten("following_id")
+        return self.__get_dynamic_data(url, {}, pattern, debug=True)
 
 
-spider = GithubUserSpider("amaork")
+
+
+spider = GithubUserSpider("torvalds")
 # for repo in spider.get_source_repo() + spider.get_fork_repo():
 #      print repo
-print len(spider.get_starred_repo())
+print len(spider.get_followers())
